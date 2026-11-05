@@ -83,3 +83,10 @@ for (const kind of ['redis', 'blob', 'file']) {
     } finally { close(); }
   });
 }
+
+test('Vercel Blob is chosen from BLOB_STORE_ID alone (OIDC) or from a read-write token', () => {
+  const { dbFromEnv } = require('../lib/storage');
+  assert.equal(dbFromEnv({ VERCEL: '1', BLOB_STORE_ID: 'store_x' }).kind, 'blob');
+  assert.equal(dbFromEnv({ VERCEL: '1', BLOB_READ_WRITE_TOKEN: 'vercel_blob_rw_x' }).kind, 'blob');
+  assert.equal(dbFromEnv({ VERCEL: '1' }), null);
+});

@@ -66,7 +66,7 @@ npm test
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port |
 | `DATA_FILE` | `./data/daycraft.json` | JSON file used when Redis isn't configured |
-| `BLOB_READ_WRITE_TOKEN` | – | Vercel Blob store (private), set automatically when the store is connected |
+| `BLOB_STORE_ID` / `BLOB_READ_WRITE_TOKEN` | – | Vercel Blob store (private), set automatically when the store is connected |
 | `DAYCRAFT_BLOB_PREFIX` | `daycraft/` | Path prefix inside the Blob store |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | – | Upstash Redis REST credentials (also accepts `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`) |
 | `DAYCRAFT_PREFIX` | `daycraft:` | Prefix for Redis keys, so the store can be shared safely |
@@ -82,7 +82,7 @@ The repository is ready for Vercel: `public/` is served as static files, `api/ci
 
 Vercel functions can't keep files between requests, so My Group and shared boards need a store. Either option works:
 
-- **Vercel Blob (simplest)**: in the Vercel project, go to **Storage → Create → Blob**, choose **Private** access, and connect it to the project. This adds `BLOB_READ_WRITE_TOKEN`. Reads skip the CDN cache, and writes are conditional on the record's ETag.
+- **Vercel Blob (simplest)**: in the Vercel project, go to **Storage → Create → Blob**, choose **Private** access, and connect it to the project. This adds `BLOB_STORE_ID`; functions then authenticate with Vercel's OIDC token, so no secret is stored. Older stores add `BLOB_READ_WRITE_TOKEN`, which also works. Reads skip the CDN cache, and writes are conditional on the record's ETag.
 - **Upstash Redis**: go to **Storage → Create Database → Upstash for Redis** and connect it. This adds `KV_REST_API_URL` and `KV_REST_API_TOKEN`. Writes use a compare-and-set script.
 
 Then redeploy. Until a store is connected, the planner and local boards still work, and the server features reply "Storage is not configured". If both are configured, Redis is used.
