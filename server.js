@@ -24,7 +24,7 @@ const TYPES = {
   '.ico': 'image/x-icon',
   '.txt': 'text/plain; charset=utf-8',
 };
-const ROUTES = { '/': 'index.html', '/circle': 'circle.html' };
+const ROUTES = { '/': 'index.html', '/circle': 'circle.html', '/boards': 'boards.html' };
 
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',

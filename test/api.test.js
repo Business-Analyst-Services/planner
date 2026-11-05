@@ -28,7 +28,7 @@ async function withServer(fn) {
 }
 
 test('serves planner pages and assets', () => withServer(async ({ base }) => {
-  for (const [p, type] of [['/', 'text/html'], ['/circle', 'text/html'], ['/app.js', 'text/javascript'], ['/circle.css', 'text/css']]) {
+  for (const [p, type] of [['/', 'text/html'], ['/circle', 'text/html'], ['/boards', 'text/html'], ['/boards.js', 'text/javascript'], ['/app.js', 'text/javascript'], ['/circle.css', 'text/css']]) {
     const res = await fetch(base + p);
     assert.equal(res.status, 200, p);
     assert.match(res.headers.get('content-type'), new RegExp(type));

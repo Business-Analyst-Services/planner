@@ -15,6 +15,21 @@ Daycraft is a calm weekly planner. It comes with a small group page where people
 - JSON export and import for backups.
 - Keyboard navigation: ← / → moves by day, ⌘/Ctrl + ← / → moves by week.
 
+**Boards** (`/boards`) adds Scrum and Kanban project boards. Like the planner, they run in the browser and save to `localStorage`.
+- **Projects**: create as many as you need, each using either Scrum or Kanban. You can rename, reorder and add workflow columns, and give any column except Done a WIP limit.
+- **Cards**: each card has a type (story, task, bug, spike, chore), priority, story points (Fibonacci), assignee, labels, due date, checklist or acceptance criteria, and a blocked flag with a reason. Cards move by drag and drop or with the ‹ › buttons. You can search, filter by type, assignee or label, and group the board into swimlanes by assignee, priority or type.
+- **Scrum**
+  - *Backlog*: an ordered product backlog. Drag items into planned sprints; the backlog shows capacity against average velocity and counts unestimated items. Quick-add lets you type a new item and its points in one line.
+  - *Sprints*: each sprint has a name, goal, dates and optional capacity. Only one sprint can be active at a time. Completing a sprint records velocity and lets you move unfinished items back to the backlog or into a planned or new sprint.
+  - *Sprint board*: shows progress and time elapsed alongside the workflow columns.
+  - *Reports*: a burndown chart (ideal against remaining points), a velocity chart (committed against completed), the say/do ratio, and sprint history.
+  - *Ceremonies*: daily scrum notes (yesterday, today, blockers) with a list of blocked cards, and a retrospective board (went well, to improve, action items).
+- **Kanban**
+  - *Board*: WIP limits turn a column amber at the limit and red above it, and each card shows how many days it has been in its current column. Done cards can be archived and restored.
+  - *Flow metrics*: work in progress, throughput over 7 and 30 days, average and 85th percentile cycle time, lead time, blocked count, a 30-day cumulative flow diagram, weekly throughput, and a list of the oldest work in progress.
+- **Planner integration**: **📅 Add to planner** turns any card or retro action item into a Daycraft planner task, and an open planner tab updates straight away.
+- Boards have their own JSON export and import, and the first visit includes example Scrum and Kanban projects.
+
 **My Group** (`/circle`) is backed by the server:
 - No accounts. Each member claims a spot (10 by default) and gets a private editing link, a 64-character hex key that is only ever stored as a SHA-256 hash.
 - Each member sets one weekly commitment and a target number of sessions, then records dated check-ins (completed, partial, skipped, paused or rescheduled).
@@ -60,7 +75,7 @@ Any Node host with a persistent disk will work. The planner pages are fully stat
 
 ```
 server.js        Static file server and /api/circle JSON API
-public/          Planner and My Group front end (plain HTML/CSS/JS)
+public/          Planner, Boards and My Group front end (plain HTML/CSS/JS)
 test/            API tests (node:test)
 ```
 

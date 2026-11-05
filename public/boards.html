@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Daycraft — Boards</title>
+<link rel="stylesheet" href="/view-tabs.css">
+<link rel="stylesheet" href="/boards.css">
+</head>
+<body>
+<header class="app-header">
+  <div>
+    <a class="brand" href="/">◈ daycraft<span>.</span></a>
+    <div class="sub">Scrum sprints and Kanban flow, side by side with your week.</div>
+  </div>
+  <div class="header-actions">
+    <span class="muted hide-small">● Saved on this device</span>
+    <button id="exportboards">Export</button>
+    <button id="importboards">Import</button>
+  </div>
+</header>
+<nav class="view-tabs" aria-label="Main views">
+  <a class="view-tab" href="/">Full Planner</a>
+  <a class="view-tab" href="/boards" aria-current="page">Boards</a>
+  <a class="view-tab" href="/circle">My Group</a>
+</nav>
+
+<div class="project-bar">
+  <label class="project-picker">Project
+    <select id="projectselect" aria-label="Choose a project"></select>
+  </label>
+  <span id="projecttype" class="type-pill"></span>
+  <button id="newproject">＋ New project</button>
+  <button id="projectsettings">Project settings</button>
+  <span class="spacer"></span>
+  <div id="viewtabs" class="sub-tabs" role="tablist" aria-label="Project views"></div>
+</div>
+
+<div class="filter-bar" id="filterbar">
+  <input id="search" type="search" placeholder="Search cards…" aria-label="Search cards">
+  <select id="filtertype" aria-label="Filter by type"><option value="">All types</option></select>
+  <select id="filterassignee" aria-label="Filter by assignee"><option value="">Anyone</option></select>
+  <select id="filterlabel" aria-label="Filter by label"><option value="">All labels</option></select>
+  <select id="swimlanes" aria-label="Swimlanes">
+    <option value="">No swimlanes</option>
+    <option value="assignee">Swimlanes: assignee</option>
+    <option value="priority">Swimlanes: priority</option>
+    <option value="type">Swimlanes: type</option>
+  </select>
+  <button id="clearfilters">Clear</button>
+  <span class="spacer"></span>
+  <button class="primary" id="newcard">＋ New card</button>
+</div>
+
+<main id="view" class="view" aria-live="polite"></main>
+
+<dialog id="carddialog" aria-labelledby="cardheading">
+  <form id="cardform">
+    <div class="eyebrow" id="cardeyebrow">NEW CARD</div>
+    <h2 id="cardheading">New card</h2>
+    <label>Title<input name="title" required maxlength="160" placeholder="As a … I want … so that …"></label>
+    <label>Description<textarea name="desc" maxlength="4000" rows="4" placeholder="Context, notes, links"></textarea></label>
+    <div class="row">
+      <label>Type<select name="type"></select></label>
+      <label>Priority<select name="priority"></select></label>
+      <label>Story points<select name="points"></select></label>
+    </div>
+    <div class="row">
+      <label>Status<select name="column"></select></label>
+      <label id="sprintfield">Sprint<select name="sprint"></select></label>
+    </div>
+    <div class="row">
+      <label>Assignee<input name="assignee" maxlength="60" list="assignees" placeholder="Name"></label>
+      <label>Due date<input name="due" type="date"></label>
+    </div>
+    <label>Labels<input name="labels" maxlength="200" placeholder="Comma separated, e.g. frontend, urgent"></label>
+    <fieldset class="acceptance">
+      <legend>Checklist / acceptance criteria</legend>
+      <div id="checklist"></div>
+      <div class="inline-add"><input id="newcheck" maxlength="200" placeholder="Add an item" aria-label="New checklist item"><button type="button" id="addcheck">Add</button></div>
+    </fieldset>
+    <label class="check"><input name="blocked" type="checkbox"> Blocked</label>
+    <label id="blockedreasonfield">Blocked because<input name="blockedReason" maxlength="200"></label>
+    <p class="muted small" id="cardmeta"></p>
+    <div class="actions">
+      <button type="button" id="deletecard" class="danger" hidden>Delete</button>
+      <button type="button" id="plancard" hidden title="Add this card to your Daycraft planner">📅 Add to planner</button>
+      <span class="spacer"></span>
+      <button type="button" id="cancelcard">Cancel</button>
+      <button class="primary">Save card</button>
+    </div>
+  </form>
+</dialog>
+<datalist id="assignees"></datalist>
+
+<dialog id="projectdialog" aria-labelledby="projectheading">
+  <form id="projectform">
+    <div class="eyebrow">PROJECT</div>
+    <h2 id="projectheading">New project</h2>
+    <label>Name<input name="name" required maxlength="60"></label>
+    <fieldset class="framework" id="frameworkfield">
+      <legend>Framework</legend>
+      <label class="radio-card"><input type="radio" name="type" value="scrum" checked><span><strong>Scrum</strong><small>Product backlog, time-boxed sprints, burndown, velocity and retrospectives.</small></span></label>
+      <label class="radio-card"><input type="radio" name="type" value="kanban"><span><strong>Kanban</strong><small>Continuous flow with WIP limits, cycle time, throughput and a cumulative flow diagram.</small></span></label>
+    </fieldset>
+    <fieldset>
+      <legend>Workflow columns</legend>
+      <p class="muted small">The last column counts as Done. Set a WIP limit to cap work in progress (blank = no limit).</p>
+      <div id="columnlist"></div>
+      <button type="button" id="addcolumn">＋ Add column</button>
+    </fieldset>
+    <label id="sprintlengthfield">Default sprint length
+      <select name="sprintDays"><option value="7">1 week</option><option value="14" selected>2 weeks</option><option value="21">3 weeks</option><option value="28">4 weeks</option></select>
+    </label>
+    <div class="actions">
+      <button type="button" id="deleteproject" class="danger" hidden>Delete project</button>
+      <span class="spacer"></span>
+      <button type="button" id="cancelproject">Cancel</button>
+      <button class="primary">Save project</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="sprintdialog" aria-labelledby="sprintheading">
+  <form id="sprintform">
+    <div class="eyebrow">SPRINT PLANNING</div>
+    <h2 id="sprintheading">New sprint</h2>
+    <label>Sprint name<input name="name" required maxlength="60"></label>
+    <label>Sprint goal<textarea name="goal" maxlength="500" rows="2" placeholder="What will this sprint achieve?"></textarea></label>
+    <div class="row">
+      <label>Start<input name="start" type="date" required></label>
+      <label>End<input name="end" type="date" required></label>
+    </div>
+    <label>Capacity (story points, optional)<input name="capacity" type="number" min="0" max="999"></label>
+    <p class="muted small" id="sprinthint"></p>
+    <div class="actions">
+      <button type="button" id="deletesprint" class="danger" hidden>Delete sprint</button>
+      <span class="spacer"></span>
+      <button type="button" id="cancelsprint">Cancel</button>
+      <button class="primary">Save sprint</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="closedialog" aria-labelledby="closeheading">
+  <form id="closeform">
+    <div class="eyebrow">SPRINT REVIEW</div>
+    <h2 id="closeheading">Complete sprint</h2>
+    <div id="closesummary"></div>
+    <label>Move unfinished cards to<select name="target"></select></label>
+    <div class="actions">
+      <button type="button" id="cancelclose">Cancel</button>
+      <button class="primary">Complete sprint</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="plandialog" aria-labelledby="planheading">
+  <form id="planform">
+    <div class="eyebrow">MAKE ROOM FOR IT</div>
+    <h2 id="planheading">Add to planner</h2>
+    <p id="plantitle" class="muted"></p>
+    <div class="row">
+      <label>Date<input name="date" type="date" required></label>
+      <label>Start time (optional)<input name="time" type="time" step="900"></label>
+    </div>
+    <label>Duration<select name="duration"><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60" selected>1 hour</option><option value="90">1½ hours</option><option value="120">2 hours</option></select></label>
+    <label class="check"><input name="priority" type="checkbox"> Show in day’s priorities</label>
+    <div class="actions">
+      <button type="button" id="cancelplan">Cancel</button>
+      <button class="primary">Add to planner</button>
+    </div>
+  </form>
+</dialog>
+
+<input id="boardsfile" type="file" accept="application/json" hidden>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="/boards.js"></script>
+</body>
+</html>
