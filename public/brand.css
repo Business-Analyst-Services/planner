@@ -1,0 +1,96 @@
+/* BAS Planner brand layer, loaded last on every page.
+   Source: BAS design system (tokens.json + README): navy is the brand, teal the signature accent,
+   Arial throughout, square-cornered cards and panels, eyebrow labels, teal footer band. */
+:root {
+  --bas-navy: #1F3A5F;
+  --bas-navy-deep: #14284A;
+  --bas-navy-mid: #34557C;
+  --bas-navy-soft: #3E6189;
+  --bas-teal: #4DB8B8;
+  --bas-teal-tint: #CDEDED;
+  --bas-orange: #F5A04A;
+  --bas-slate: #5A6B7D;
+  --bas-surface: #FFFFFF;
+  --bas-surface-alt: #F4F6F8;
+  --bas-line: #DDE3EA;
+  --bas-line-strong: #C9D3DE;
+  --bas-font: Arial, Helvetica, "Liberation Sans", sans-serif;
+  font-family: var(--bas-font);
+}
+
+/* Type: Arial throughout */
+body, button, input, select, textarea, .view-tabs .view-tab { font-family: var(--bas-font) !important; }
+html, body { color: var(--bas-navy); background: var(--bas-surface-alt) !important; }
+
+/* Square corners: cards, panels and controls (radius-none / radius-sm). Avatars, badges and status dots stay round. */
+button, input, select, textarea, dialog, .view-tabs .view-tab,
+.workspace, .panel, .member, .person-row, .sprint-section, .board, .stat, .card, .chip, .event,
+.agenda-picker, .agenda-content, .year-progress, .circle-planner-banner, .tip, .side-panel, .empty-state,
+.sprint-banner, .retro-col, .retro-note, .fresh-link, .member-list, .backlog-row, .archived, .impediments,
+.summary, .keybox, .row-day, .week-square, .weeksquare, .session-segment, .label, .prio-pill, .type-pill,
+.capacity, .state-pill, .role-pill, .count, .points, .toast, .sub-tabs, .sub-tabs button, .period-switch,
+.period-switch button, .agenda-time, .agenda-quick button, .group-comment, .logrow, details, .pills span {
+  border-radius: 2px !important;
+}
+
+/* Header: logo + BAS wordmark */
+header, .app-header, .group-header { background: var(--bas-surface); border-bottom: 1px solid var(--bas-line); }
+.bas-brand { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; color: var(--bas-navy); letter-spacing: 0; font-size: inherit; font-weight: inherit; }
+.bas-brand img { width: 44px; height: 44px; display: block; }
+.bas-brand .bas-word { font-size: 20px; line-height: 1; color: var(--bas-navy) !important; font-weight: 400; }
+.bas-brand .bas-word b { color: var(--bas-navy); }
+.bas-word b { font-weight: 700; letter-spacing: .18em; margin-right: 2px; }
+.sub { color: var(--bas-slate) !important; letter-spacing: .02em; }
+
+/* Eyebrow: spaced capitals with a short teal rule. Text stays slate/navy because teal on white is 2.3:1. */
+.eyebrow { color: var(--bas-slate) !important; letter-spacing: .3em !important; font-weight: 700 !important; display: block; }
+.eyebrow::before { content: ""; display: block; width: 28px; height: 3px; background: var(--bas-teal); margin-bottom: 8px; }
+
+/* Primary actions: navy; hover deepens. Orange is reserved for the one call to action on navy panels. */
+.primary, button.primary { background: var(--bas-navy) !important; border-color: var(--bas-navy) !important; color: #fff !important; }
+.primary:hover:not(:disabled), button.primary:hover:not(:disabled) { background: var(--bas-navy-deep) !important; }
+:focus-visible { outline: 3px solid var(--bas-teal) !important; outline-offset: 2px; }
+
+/* View tabs */
+.view-tabs { border-bottom: 1px solid var(--bas-line); }
+.view-tabs .view-tab { background: var(--bas-surface-alt); color: var(--bas-navy); border-color: var(--bas-line); font-weight: 700; }
+.view-tabs .view-tab:hover { background: var(--bas-teal-tint); }
+.view-tabs .view-tab[aria-current=page] { background: var(--bas-navy); border-color: var(--bas-navy); color: #fff; box-shadow: inset 0 -4px 0 var(--bas-teal); }
+
+/* Footer band: full-width teal strip with the tagline (navy text on teal is 4.9:1) */
+.bas-band { display: flex; justify-content: space-between; align-items: center; gap: 16px; background: var(--bas-teal); color: var(--bas-navy); padding: 12px 24px; margin-top: 32px; font: 700 10px/1.4 var(--bas-font); letter-spacing: .25em; text-transform: uppercase; }
+main + .bas-band, .workspace ~ .bas-band { margin-top: 32px; }
+
+/* Done / progress fills use teal with navy marks for contrast */
+.row-day.goal-met, .row-day.day-done, .week-square.done, .weeksquare.done, .session-segment.filled { background: var(--bas-teal) !important; color: var(--bas-navy) !important; border-color: var(--bas-teal) !important; }
+.progress i, .bar i { background: var(--bas-teal) !important; }
+
+/* My Group: timeframe switcher and period grids */
+.period-switch { display: inline-flex; align-items: center; gap: 4px; margin: 26px 0 0; padding: 4px; background: var(--bas-surface-alt); border: 1px solid var(--bas-line); }
+.period-switch .period-label { font: 700 10px var(--bas-font); letter-spacing: .25em; text-transform: uppercase; color: var(--bas-slate); padding: 0 10px 0 6px; }
+.period-switch button { border: 0; background: transparent; padding: 9px 16px; font-weight: 700; color: var(--bas-navy); min-height: 40px; }
+.period-switch button:hover { background: var(--bas-teal-tint); }
+.period-switch button[aria-pressed=true] { background: var(--bas-navy); color: #fff; box-shadow: inset 0 -3px 0 var(--bas-teal); }
+.week-heading, .row-week { grid-template-columns: repeat(var(--cols, 7), minmax(0, 1fr)) !important; }
+.week-heading.compact { padding-top: 8px; padding-bottom: 8px; }
+.week-heading.compact span { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--bas-slate); }
+.row-week.period-fortnight, .row-week.period-month { row-gap: 6px; }
+.row-week.period-month .row-day { min-height: 34px; }
+.row-week.period-quarter .row-day { min-height: 40px; }
+.row-day { position: relative; }
+.row-day .cell-n { position: absolute; top: 3px; left: 5px; font: 700 10px var(--bas-font); color: var(--bas-slate); pointer-events: none; }
+.row-day.goal-met .cell-n, .row-day.day-done .cell-n { color: var(--bas-navy); }
+.row-day.blank { background: transparent !important; box-shadow: none !important; }
+.row-day.is-today { box-shadow: inset 0 0 0 2px var(--bas-navy); }
+@media (max-width: 700px) {
+  .period-switch { display: flex; width: 100%; margin-top: 16px; }
+  .period-switch .period-label { display: none; }
+  .period-switch button { flex: 1; padding: 9px 4px; }
+  .row-week.period-quarter, .week-heading.compact[style] { grid-template-columns: repeat(7, minmax(0, 1fr)) !important; }
+  .bas-band { padding: 10px 16px; font-size: 9px; }
+  .group-header { flex-wrap: wrap; padding: 12px 16px; }
+  .group-header .view-tabs { width: 100%; padding: 0; border: 0; position: static; }
+  .view-tabs .view-tab { min-width: 0 !important; padding: 10px 6px !important; font-size: 14px !important; }
+  .bas-word { font-size: 17px; }
+  .bas-brand img { width: 36px; height: 36px; }
+}

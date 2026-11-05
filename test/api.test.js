@@ -17,8 +17,8 @@ async function withServer(fn) {
   const { server } = createApp({ dataFile: path.join(dir, 'daycraft.json') });
   await new Promise(r => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const api = async (mode, { k, body, w = week } = {}) => {
-    const res = await fetch(`${base}/api/circle?mode=${mode}&week=${w}`, {
+  const api = async (mode, { k, body, w = week, period } = {}) => {
+    const res = await fetch(`${base}/api/circle?mode=${mode}&week=${w}${period ? '&period=' + period : ''}`, {
       method: body ? 'POST' : 'GET',
       headers: { ...(k ? { Authorization: 'Bearer ' + k } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
@@ -90,4 +90,31 @@ test('rejects bad weeks, enforces capacity and persists to disk', () => withServ
   assert.equal((await api('claim', { k: key(), body: { name: 'Late', consent: true } })).status, 409);
   const saved = JSON.parse(fs.readFileSync(path.join(dir, 'daycraft.json'), 'utf8')).records.circle;
   assert.equal(saved.members.length, 10);
+}));
+
+test('monthly and quarterly commitments are separate from weekly ones', () => withServer(async ({ api }) => {
+  const { periodStart, periodEnd } = require('../lib/circle-api');
+  const a = key();
+  await api('claim', { k: a, body: { name: 'Ann', consent: true } });
+  const month = periodStart('month', today), quarter = periodStart('quarter', today);
+  assert.equal((await api('board', { w: week, period: 'month' })).status, month === week ? 200 : 400, 'start must be the 1st');
+  assert.equal((await api('board', { w: month, period: 'decade' })).status, 400);
+  assert.equal((await api('save', { k: a, w: month, period: 'month', body: { action: 'Read 4 books', goal: 30 } })).status, 200, 'monthly goals can exceed 21');
+  assert.equal((await api('save', { k: a, w: quarter, period: 'quarter', body: { action: 'Ship v2', goal: 1 } })).status, 200);
+  // a check-in late in the month is valid for the month even if outside the current week
+  const end = periodEnd('month', month);
+  assert.equal((await api('log', { k: a, w: month, period: 'month', body: { id: crypto.randomUUID(), date: end, status: 'done' } })).status, 200);
+  const { addDays } = require('../lib/circle-api');
+  assert.equal((await api('log', { k: a, w: month, period: 'month', body: { id: crypto.randomUUID(), date: addDays(end, 1), status: 'done' } })).status, 400, 'dates outside the month are rejected');
+  const mb = (await api('board', { w: month, period: 'month' })).json;
+  assert.equal(mb.period, 'month'); assert.equal(mb.end, end);
+  assert.equal(mb.members[0].entry.action, 'Read 4 books');
+  assert.equal(mb.members[0].summary.completed, 1);
+  assert.equal(mb.members[0].timeline.length, 13);
+  const wb = (await api('board')).json;
+  assert.equal(wb.members[0].entry, null, 'weekly board is unaffected');
+  const qb = (await api('board', { w: quarter, period: 'quarter' })).json;
+  assert.equal(qb.members[0].entry.action, 'Ship v2');
+  const me = (await api('me', { k: a, w: month, period: 'month' })).json;
+  assert.equal(me.entry.week, month);
 }));

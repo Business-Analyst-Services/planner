@@ -3,7 +3,34 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');
-const { createRedisDb, createFileDb } = require('../lib/storage');
+const { createRedisDb, createFileDb, createBlobDb } = require('../lib/storage');
+
+// In-memory stand-in for @vercel/blob with ETag conditional writes.
+function fakeBlob() {
+  class BlobPreconditionFailedError extends Error {}
+  const files = new Map(); let n = 0;
+  const tick = () => new Promise(r => setTimeout(r, Math.random() * 3));
+  return {
+    BlobPreconditionFailedError,
+    async get(path, opts) {
+      await tick(); assert.equal(opts.access, 'private'); assert.equal(opts.useCache, false);
+      const f = files.get(path); if (!f) return null;
+      return { statusCode: 200, stream: new Blob([f.text]).stream(), blob: { etag: f.etag } };
+    },
+    async put(path, text, opts) {
+      await tick(); const f = files.get(path);
+      if (opts.ifMatch && (!f || f.etag !== opts.ifMatch)) throw new BlobPreconditionFailedError('Precondition failed');
+      if (f && !opts.allowOverwrite) throw new Error('This blob already exists');
+      files.set(path, { text, etag: '"e' + ++n + '"' });
+    },
+    async del(path, opts) {
+      await tick(); const f = files.get(path);
+      if (opts.ifMatch && f && f.etag !== opts.ifMatch) throw new BlobPreconditionFailedError('Precondition failed');
+      files.delete(path);
+    },
+    async list({ prefix }) { return { blobs: [...files.keys()].filter(k => k.startsWith(prefix)).map(pathname => ({ pathname })), hasMore: false }; },
+  };
+}
 
 function fakeUpstash() {
   const kv = new Map(), sets = new Map();
@@ -30,7 +57,7 @@ function fakeUpstash() {
   return { server, kv };
 }
 
-for (const kind of ['redis', 'file']) {
+for (const kind of ['redis', 'blob', 'file']) {
   test(`${kind} storage: transactions retry instead of losing concurrent writes`, async () => {
     let db, close = () => {};
     if (kind === 'redis') {
@@ -38,7 +65,8 @@ for (const kind of ['redis', 'file']) {
       await new Promise(r => server.listen(0, r));
       db = createRedisDb({ url: `http://127.0.0.1:${server.address().port}`, token: 't' });
       close = () => server.close();
-    } else db = createFileDb(null);
+    } else if (kind === 'blob') db = createBlobDb({ client: fakeBlob() });
+    else db = createFileDb(null);
     try {
       await Promise.all(Array.from({ length: 20 }, () => db.transact('counter', async s => {
         const n = (s.value?.n || 0);
@@ -48,10 +76,10 @@ for (const kind of ['redis', 'file']) {
       assert.equal((await db.get('counter')).n, 20);
       assert.equal(await db.transact('counter', s => 'read only'), 'read only');
       await db.transact('board:x', s => { s.value = { a: 1 }; });
-      if (kind === 'redis') assert.equal(await db.count('board:'), 1);
+      if (kind !== 'file') assert.equal(await db.count('board:'), 1);
       await db.transact('board:x', s => { s.value = null; });
       assert.equal(await db.get('board:x'), null);
-      if (kind === 'redis') assert.equal(await db.count('board:'), 0);
+      if (kind !== 'file') assert.equal(await db.count('board:'), 0);
     } finally { close(); }
   });
 }

@@ -1,4 +1,4 @@
-// Daycraft Boards: Scrum and Kanban projects, stored locally in this browser.
+// BAS Planner Boards: Scrum and Kanban projects, stored locally in this browser.
 (() => {
 'use strict';
 
@@ -829,7 +829,7 @@ $('#newcard').onclick = () => {
 $('#exportboards').onclick = () => {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(store, null, 2)], { type: 'application/json' }));
-  a.download = 'daycraft-boards-backup.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  a.download = 'bas-planner-boards-backup.json'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 };
 $('#importboards').onclick = () => $('#boardsfile').click();
 $('#boardsfile').onchange = async e => {
@@ -837,7 +837,7 @@ $('#boardsfile').onchange = async e => {
     const next = JSON.parse(await e.target.files[0].text());
     if (!validStore(next)) throw Error();
     if (confirm('Replace all boards with this backup? Export first if you need to keep the current ones.')) { store = next; ui.project = store.projects[0]?.id; save(); render(); toast('Boards restored.'); }
-  } catch { toast('That file is not a valid Daycraft boards backup.'); }
+  } catch { toast('That file is not a valid BAS Planner boards backup.'); }
   e.target.value = '';
 };
 
@@ -1004,7 +1004,7 @@ function renderTeam() {
   if (!p) return;
   if (!p.shared) {
     $('#shareheading').textContent = 'Share this project';
-    body.innerHTML = `<p>Put <strong>${esc(p.name)}</strong> on the Daycraft server so your team can work on it together. Changes sync automatically.</p>
+    body.innerHTML = `<p>Put <strong>${esc(p.name)}</strong> on the BAS Planner server so your team can work on it together. Changes sync automatically.</p>
       <ul class="share-points"><li>Invite people by name as <strong>editors</strong> (can change the board) or <strong>viewers</strong> (can follow along). Each person gets their own private link.</li>
       <li>Reset anyone’s link if it leaks. The old link stops working straight away.</li>
       <li>Optionally turn on a <strong>public view-only link</strong> for stakeholders.</li></ul>
@@ -1048,7 +1048,7 @@ function renderTeam() {
     };
     const vl = sh.viewLink;
     body.innerHTML = `
-      ${freshLink ? `<div class="fresh-link">${linkBox(freshLink.label, freshLink.url, freshLink.hint, 'freshlink')}<p class="small">Copy it now and send it privately. Daycraft can’t show this link again, but you can reset it to get a new one.</p></div>` : ''}
+      ${freshLink ? `<div class="fresh-link">${linkBox(freshLink.label, freshLink.url, freshLink.hint, 'freshlink')}<p class="small">Copy it now and send it privately. BAS Planner can’t show this link again, but you can reset it to get a new one.</p></div>` : ''}
       <h3 class="team-h">Members <span class="muted small">${members.length}</span></h3>
       <div class="member-list">${members.map(memberRow).join('')}</div>
       ${owner ? `<form id="inviteform" class="invite-row"><input name="name" required maxlength="40" placeholder="Name" aria-label="Name to invite"><select name="role" aria-label="Role"><option value="editor">Editor</option><option value="viewer">Viewer</option><option value="owner">Owner</option></select><button class="primary">Invite</button></form>

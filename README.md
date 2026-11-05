@@ -1,8 +1,8 @@
-# Daycraft
+# BAS Planner
 
-*A little structure. A little more space.*
+*Plan the week. Run the sprint. Check in together.*
 
-Daycraft is a calm weekly planner. It comes with a small group page where people keep each other accountable.
+BAS Planner is a weekly planner for Business Analyst Services. It has Scrum and Kanban boards and a small accountability group. It follows the BAS design system: navy and teal, Arial type, square-cornered panels, eyebrow labels and the teal footer band. The logo files are in `public/brand/` and the brand layer is `public/brand.css`.
 
 ## Features
 
@@ -39,6 +39,7 @@ Daycraft is a calm weekly planner. It comes with a small group page where people
 - Boards have their own JSON export and import, and the first visit includes example Scrum and Kanban projects.
 
 **My Group** (`/circle`) is backed by the server:
+- **Timeframes**: choose **Week, Fortnight, Month or Quarter**. Each timeframe has its own commitments, check-ins, comments, history and streaks. Week and fortnight show a strip of days, month shows a calendar grid, and quarter shows 13–14 week blocks. Goals scale with the timeframe, up to 186 sessions a quarter. Weekly data from earlier versions is unchanged.
 - No accounts. Each member claims a spot (10 by default) and gets a private editing link, a 64-character hex key that is only ever stored as a SHA-256 hash.
 - Each member sets one weekly commitment and a target number of sessions, then records dated check-ins (completed, partial, skipped, paused or rescheduled).
 - A private schedule for the commitment, with one-time export to Google Calendar, Outlook or an `.ics` file.
@@ -65,6 +66,8 @@ npm test
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port |
 | `DATA_FILE` | `./data/daycraft.json` | JSON file used when Redis isn't configured |
+| `BLOB_READ_WRITE_TOKEN` | – | Vercel Blob store (private), set automatically when the store is connected |
+| `DAYCRAFT_BLOB_PREFIX` | `daycraft/` | Path prefix inside the Blob store |
 | `KV_REST_API_URL`, `KV_REST_API_TOKEN` | – | Upstash Redis REST credentials (also accepts `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`) |
 | `DAYCRAFT_PREFIX` | `daycraft:` | Prefix for Redis keys, so the store can be shared safely |
 | `BOARDS_MAX_BYTES` | `1000000` | Maximum size of one shared board |
@@ -77,13 +80,14 @@ npm test
 
 The repository is ready for Vercel: `public/` is served as static files, `api/circle.js` and `api/boards.js` run as functions, and `vercel.json` sets clean URLs (`/boards`, `/circle`) and security headers.
 
-Vercel functions can't keep files between requests, so My Group and shared boards store their data in **Upstash Redis**:
+Vercel functions can't keep files between requests, so My Group and shared boards need a store. Either option works:
 
-1. Import the GitHub repository into Vercel. No build settings are needed.
-2. In the Vercel project, go to **Storage → Create Database → Upstash for Redis** (the free plan is enough for a pilot) and connect it to the project. This adds `KV_REST_API_URL` and `KV_REST_API_TOKEN` to the project's environment variables.
-3. Redeploy. Until a store is connected, the planner and local boards still work, and the server features reply "Storage is not configured".
+- **Vercel Blob (simplest)**: in the Vercel project, go to **Storage → Create → Blob**, choose **Private** access, and connect it to the project. This adds `BLOB_READ_WRITE_TOKEN`. Reads skip the CDN cache, and writes are conditional on the record's ETag.
+- **Upstash Redis**: go to **Storage → Create Database → Upstash for Redis** and connect it. This adds `KV_REST_API_URL` and `KV_REST_API_TOKEN`. Writes use a compare-and-set script.
 
-Redis writes use compare-and-set, so simultaneous requests from different function instances never overwrite each other. Each open shared board checks for changes every 8 seconds while its tab is visible. Keep that in mind against Upstash's free command allowance if many people keep boards open all day.
+Then redeploy. Until a store is connected, the planner and local boards still work, and the server features reply "Storage is not configured". If both are configured, Redis is used.
+
+Both stores refuse a write when someone else has changed the record in the meantime, and the request is retried on fresh data. Simultaneous requests from different function instances therefore never overwrite each other. Each open shared board checks for changes every 8 seconds while its tab is visible. Keep that in mind against Upstash's free command allowance if many people keep boards open all day.
 
 ### Docker or any Node host
 
@@ -105,7 +109,9 @@ api/             Vercel functions for /api/circle and /api/boards
 lib/core.js      Request handling shared by both
 lib/circle-api.js  My Group logic
 lib/boards-api.js  Shared boards: members, roles, links, patches
-lib/storage.js   JSON-file and Upstash Redis storage with compare-and-set
+lib/storage.js   JSON-file, Vercel Blob and Upstash Redis storage with compare-and-set
+public/brand/    BAS logo, badge and lockup
+public/brand.css BAS brand layer (colours, type, header, footer band)
 public/          Planner, Boards and My Group front end (plain HTML/CSS/JS)
 test/            API tests (node:test)
 ```
