@@ -14,7 +14,7 @@
     <div class="sub">Scrum sprints and Kanban flow, side by side with your week.</div>
   </div>
   <div class="header-actions">
-    <span class="muted hide-small">● Saved on this device</span>
+    <span class="sync-status" id="syncstatus" role="status" aria-live="polite">● Saved on this device</span>
     <button id="exportboards">Export</button>
     <button id="importboards">Import</button>
   </div>
@@ -31,6 +31,7 @@
   </label>
   <span id="projecttype" class="type-pill"></span>
   <button id="newproject">＋ New project</button>
+  <button id="sharebtn">🔗 Share</button>
   <button id="projectsettings">Project settings</button>
   <span class="spacer"></span>
   <div id="viewtabs" class="sub-tabs" role="tablist" aria-label="Project views"></div>
@@ -171,6 +172,13 @@
       <button class="primary">Add to planner</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="sharedialog" aria-labelledby="shareheading">
+  <div class="eyebrow">TEAM BOARD</div>
+  <h2 id="shareheading">Share this project</h2>
+  <div id="sharebody"></div>
+  <div class="actions"><span class="spacer"></span><button type="button" id="closeshare">Close</button></div>
 </dialog>
 
 <input id="boardsfile" type="file" accept="application/json" hidden>

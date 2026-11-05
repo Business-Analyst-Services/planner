@@ -42,9 +42,10 @@ function toast(text) {
 // ---------- store ----------
 let store, ui;
 function load() {
-  try { store = JSON.parse(localStorage.getItem(STORE_KEY)); } catch { store = null; }
-  if (!validStore(store)) { store = { version: 1, projects: [] }; seed(); save(); }
   try { ui = JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch { ui = {}; }
+  try { store = JSON.parse(localStorage.getItem(STORE_KEY)); } catch { store = null; }
+  if (!validStore(store)) { store = { version: 1, projects: [] }; seed(); persist(); }
+  store.projects.forEach(p => { p.standups = p.standups || []; p.standups.forEach(x => { if (!x.id) x.id = uid(); }); });
   if (!store.projects.some(p => p.id === ui.project)) ui.project = store.projects[0]?.id;
   ui.filters = ui.filters || {};
 }
@@ -54,6 +55,11 @@ function validStore(s) {
     Array.isArray(p.columns) && p.columns.length >= 2 && Array.isArray(p.cards) && Array.isArray(p.sprints));
 }
 function save() {
+  guardReadonly();
+  persist();
+  queueSyncAll();
+}
+function persist() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch { toast('Storage unavailable. Export your boards to keep a backup.'); }
   saveUi();
 }
@@ -555,7 +561,7 @@ function renderCeremonies(p) {
   </div>`;
   $('#standupform').onsubmit = e => {
     e.preventDefault();
-    const f = e.target.elements, entry = { date: t, sprint: s?.id || null, yesterday: f.yesterday.value.trim(), today: f.today.value.trim(), blockers: f.blockers.value.trim() };
+    const f = e.target.elements, entry = { id: todays?.id || uid(), date: t, sprint: s?.id || null, yesterday: f.yesterday.value.trim(), today: f.today.value.trim(), blockers: f.blockers.value.trim() };
     p.standups = p.standups.filter(x => !(x.date === t && x.sprint === entry.sprint));
     if (entry.yesterday || entry.today || entry.blockers) p.standups.push(entry);
     save(); render(); toast('Daily scrum notes saved.');
@@ -677,8 +683,12 @@ function openCard(id = null, preset = {}) {
   $('#cardheading').textContent = c ? 'Edit card' : 'New card';
   $('#cardeyebrow').textContent = (p.name + ' · ' + (p.type === 'scrum' ? 'Scrum' : 'Kanban')).toUpperCase();
   $('#deletecard').hidden = !c; $('#plancard').hidden = !c;
-  $('#cardmeta').textContent = c ? `Created ${prettyY(c.created.slice(0, 10))}${c.doneAt ? ' · Done ' + prettyY(c.doneAt.slice(0, 10)) : ''}${flowTimes(p, c) ? ' · Cycle time ' + round1(flowTimes(p, c).cycle) + ' days' : ''}` : '';
-  $('#assignees').innerHTML = [...new Set(store.projects.flatMap(x => x.cards.map(c => c.assignee)).filter(Boolean))].map(a => `<option value="${esc(a)}">`).join('');
+  $('#cardmeta').textContent = c ? `Created ${prettyY(c.created.slice(0, 10))}${c.doneAt ? ' · Done ' + prettyY(c.doneAt.slice(0, 10)) : ''}${flowTimes(p, c) ? ' · Cycle time ' + round1(flowTimes(p, c).cycle) + ' days' : ''}${c.updatedBy ? ` · Last edited by ${c.updatedBy}${c.updatedAt ? ' ' + ago(c.updatedAt) : ''}` : ''}` : '';
+  $('#assignees').innerHTML = [...new Set([...(p.shared?.members || []).map(m => m.name), ...store.projects.flatMap(x => x.cards.map(c => c.assignee))].filter(Boolean))].map(a => `<option value="${esc(a)}">`).join('');
+  const ro = isReadonly(p);
+  $$('#cardform input, #cardform select, #cardform textarea, #cardform button').forEach(el => { if (!['cancelcard', 'plancard'].includes(el.id)) el.disabled = ro; });
+  if (ro) { $('#cardheading').textContent = 'View card'; $('#deletecard').hidden = true; }
+  $('#cardform button.primary').hidden = ro;
   $('#carddialog').showModal();
   f.title.focus();
 }
@@ -793,8 +803,9 @@ $('#projectform').onsubmit = e => {
   save(); $('#projectdialog').close(); render();
 };
 $('#cancelproject').onclick = () => $('#projectdialog').close();
-$('#deleteproject').onclick = () => {
+$('#deleteproject').onclick = async () => {
   const id = $('#projectform').dataset.id, p = store.projects.find(x => x.id === id);
+  if (p.shared) { $('#projectdialog').close(); return openShare(); }
   if (!confirm(`Delete “${p.name}” and all ${p.cards.length} cards? Export first if you need a copy.`)) return;
   store.projects = store.projects.filter(x => x.id !== id); ui.project = store.projects[0]?.id; save(); $('#projectdialog').close(); render();
 };
@@ -830,10 +841,329 @@ $('#boardsfile').onchange = async e => {
   e.target.value = '';
 };
 
+// ---------- shared boards (server sync) ----------
+// A shared project keeps `shared = { id, key, role, rev, base }` where `base` is the last
+// document received from the server. Local edits are sent as a patch (base → current);
+// remote changes are merged by re-applying any unsent local edits on top of the server copy.
+const DOC_FIELDS = ['name', 'sprintDays', 'columns'];
+const DOC_COLLS = ['cards', 'sprints', 'standups'];
+const syncing = new Map(); // project id -> { inflight, timer, status }
+let pendingRender = false;
+
+const clone = v => JSON.parse(JSON.stringify(v));
+const docOf = p => clone({ type: p.type, createdAt: p.createdAt, name: p.name, sprintDays: p.sprintDays, columns: p.columns, cards: p.cards, sprints: p.sprints, standups: p.standups || [] });
+const isReadonly = p => p.shared?.role === 'viewer' || p.shared?.role === 'public';
+const ROLE_LABEL = { owner: 'Owner', editor: 'Editor', viewer: 'Viewer', public: 'Public view link' };
+function replaceDoc(p, doc) { const d = clone(doc); for (const k of ['type', 'createdAt', ...DOC_FIELDS, ...DOC_COLLS]) p[k] = d[k]; }
+
+function diffDocs(a, b) {
+  const ops = { set: {}, upsert: {}, remove: {} }; let n = 0;
+  for (const f of DOC_FIELDS) if (JSON.stringify(a[f]) !== JSON.stringify(b[f])) { ops.set[f] = b[f]; n++; }
+  for (const c of DOC_COLLS) {
+    const before = new Map((a[c] || []).map(x => [x.id, JSON.stringify(x)])), seen = new Set();
+    for (const x of b[c] || []) { seen.add(x.id); if (before.get(x.id) !== JSON.stringify(x)) { (ops.upsert[c] = ops.upsert[c] || []).push(x); n++; } }
+    for (const id of before.keys()) if (!seen.has(id)) { (ops.remove[c] = ops.remove[c] || []).push(id); n++; }
+  }
+  return n ? ops : null;
+}
+function applyDocOps(doc, ops) {
+  const next = clone(doc);
+  if (!ops) return next;
+  Object.assign(next, clone(ops.set || {}));
+  for (const c of DOC_COLLS) {
+    const map = new Map((next[c] || []).map(x => [x.id, x]));
+    for (const id of ops.remove?.[c] || []) map.delete(id);
+    for (const x of ops.upsert?.[c] || []) map.set(x.id, clone(x));
+    next[c] = [...map.values()];
+  }
+  return next;
+}
+
+class ApiError extends Error { constructor(status, message) { super(message); this.status = status; } }
+async function boardsApi(mode, { id, since, key, body } = {}) {
+  const q = new URLSearchParams({ mode, ...(id ? { id } : {}), ...(since != null ? { since } : {}) });
+  let res;
+  try {
+    res = await fetch('/api/boards?' + q, { method: body ? 'POST' : 'GET', cache: 'no-store',
+      headers: { Authorization: 'Bearer ' + key, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  } catch { throw new ApiError(0, 'You appear to be offline.'); }
+  let json; try { json = await res.json(); } catch { throw new ApiError(res.status || 0, 'The server is unavailable.'); }
+  if (!res.ok) throw new ApiError(res.status, json.error || 'Something went wrong.');
+  return json;
+}
+const randomKey = () => [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, '0')).join('');
+const shareLink = (id, key) => `${location.origin}/boards#board=${encodeURIComponent(id)}&key=${key}`;
+
+function state(p) { if (!syncing.has(p.id)) syncing.set(p.id, { inflight: false, timer: null, status: 'synced' }); return syncing.get(p.id); }
+function setStatus(p, status) { state(p).status = status; if (p === project()) showStatus(); }
+function showStatus() {
+  const p = project(), el = $('#syncstatus');
+  if (!p?.shared) { el.textContent = '● Saved on this device'; el.className = 'sync-status'; return; }
+  const st = state(p).status;
+  el.className = 'sync-status shared ' + st;
+  const who = p.shared.me ? ` · ${p.shared.me.name}` : '';
+  el.textContent = st === 'saving' ? '● Saving…' : st === 'offline' ? '● Offline · will retry' : isReadonly(p) ? `● Shared · view only${who}` : `● Shared · up to date${who}`;
+}
+
+// View-only copies can't be edited: undo any local change.
+function guardReadonly() {
+  for (const p of store.projects) if (isReadonly(p) && diffDocs(p.shared.base, docOf(p))) { replaceDoc(p, p.shared.base); toast('This board is view-only.'); }
+}
+
+function queueSyncAll() {
+  for (const p of store.projects) {
+    if (!p.shared || isReadonly(p)) continue;
+    const st = state(p);
+    clearTimeout(st.timer);
+    st.timer = setTimeout(() => syncProject(p.id), 300);
+  }
+}
+
+// Remote changes arrived: keep unsent local edits on top of the new server copy.
+function mergeRemote(p, remote, sentFrom = p.shared.base) {
+  const pending = diffDocs(sentFrom, docOf(p));
+  const before = JSON.stringify(docOf(p)), roleBefore = p.shared.role;
+  replaceDoc(p, applyDocOps(remote.doc, pending));
+  p.shared.base = remote.doc; p.shared.rev = remote.rev;
+  rememberTeam(p, remote);
+  if (isReadonly(p)) replaceDoc(p, remote.doc); // a viewer has nothing to send
+  persist();
+  if (p === project() && (JSON.stringify(docOf(p)) !== before || p.shared.role !== roleBefore)) safeRender();
+  return isReadonly(p) ? null : pending;
+}
+
+async function syncProject(pid) {
+  const p = store.projects.find(x => x.id === pid);
+  if (!p?.shared || isReadonly(p)) return;
+  const st = state(p);
+  if (st.inflight) { st.again = true; return; }
+  const ops = diffDocs(p.shared.base, docOf(p));
+  if (!ops) { setStatus(p, 'synced'); return; }
+  st.inflight = true; st.again = false; setStatus(p, 'saving');
+  const sent = docOf(p);
+  try {
+    const remote = await boardsApi('patch', { id: p.shared.id, key: p.shared.key, body: { baseRev: p.shared.rev, ops } });
+    const pending = mergeRemote(p, remote, sent);
+    st.inflight = false;
+    if (pending || st.again) syncProject(pid); else setStatus(p, 'synced');
+  } catch (e) {
+    st.inflight = false;
+    if (!handleAccessError(p, e)) { setStatus(p, 'offline'); clearTimeout(st.timer); st.timer = setTimeout(() => syncProject(pid), 5000); }
+  }
+}
+
+async function pollProject(p) {
+  if (!p?.shared || state(p).inflight) return;
+  try {
+    const remote = await boardsApi('get', { id: p.shared.id, key: p.shared.key, since: p.shared.rev });
+    if (state(p).inflight || !store.projects.includes(p)) return;
+    if (!remote.unchanged) { const pending = mergeRemote(p, remote); if (pending && !isReadonly(p)) queueSyncAll(); }
+    if (state(p).status === 'offline' && !diffDocs(p.shared.base, docOf(p))) setStatus(p, 'synced');
+  } catch (e) { if (!handleAccessError(p, e)) setStatus(p, 'offline'); }
+}
+
+// Keep the team details (who I am, members, activity) that come back with each response.
+function rememberTeam(p, remote) {
+  if (remote.role) p.shared.role = remote.role;
+  for (const k of ['me', 'members', 'activity', 'viewLink']) if (remote[k] !== undefined) p.shared[k] = remote[k];
+  if (p.shared.viewLink && !p.shared.viewLink.enabled) delete p.shared.viewKey;
+  if ($('#sharedialog').open && p === project()) renderTeam();
+}
+
+function handleAccessError(p, e) {
+  if (e.status !== 404 && e.status !== 403) return false;
+  if (e.status === 403) { p.shared.role = 'viewer'; replaceDoc(p, p.shared.base); persist(); render(); toast('You can now only view this board.'); pollProject(p); return true; }
+  delete p.shared; p.name = p.name + ' (local copy)'; persist(); render();
+  toast('Your link to this shared board no longer works: it was reset, you were removed, or the board was deleted. A local copy has been kept on this device.');
+  return true;
+}
+
+function safeRender() {
+  const a = document.activeElement;
+  if (a && a.closest('#view') && a.matches('input,textarea,select')) { pendingRender = true; return; }
+  render();
+}
+$('#view').addEventListener('focusout', () => setTimeout(() => { if (pendingRender && !document.activeElement?.closest('#view input,#view textarea,#view select')) render(); }, 0));
+
+setInterval(() => { if (document.visibilityState === 'visible') pollProject(project()); }, 8000);
+window.addEventListener('focus', () => pollProject(project()));
+window.addEventListener('online', () => queueSyncAll());
+
+// Team dialog: sharing, members, roles, link resets and the public view link
+const ago = iso => {
+  if (!iso) return 'never';
+  const m = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  return m < 2 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : prettyY(iso.slice(0, 10));
+};
+let freshLink = null; // { label, url, hint } shown once after sharing, an invite or a reset
+
+function openShare() { freshLink = null; renderTeam(); if (!$('#sharedialog').open) $('#sharedialog').showModal(); }
+
+function renderTeam() {
+  const p = project(), body = $('#sharebody');
+  if (!p) return;
+  if (!p.shared) {
+    $('#shareheading').textContent = 'Share this project';
+    body.innerHTML = `<p>Put <strong>${esc(p.name)}</strong> on the Daycraft server so your team can work on it together. Changes sync automatically.</p>
+      <ul class="share-points"><li>Invite people by name as <strong>editors</strong> (can change the board) or <strong>viewers</strong> (can follow along). Each person gets their own private link.</li>
+      <li>Reset anyone’s link if it leaks. The old link stops working straight away.</li>
+      <li>Optionally turn on a <strong>public view-only link</strong> for stakeholders.</li></ul>
+      <form id="startshareform"><label>Your name<input name="name" required maxlength="40" value="${esc(ui.myName || '')}" placeholder="How your team knows you"></label>
+      <button class="primary" id="startshare">Share on server</button></form><p class="share-error" role="alert"></p>`;
+    $('#startshareform').onsubmit = async e => {
+      e.preventDefault();
+      const btn = $('#startshare'), name = e.target.elements.name.value.trim(); if (!name) return;
+      btn.disabled = true; btn.textContent = 'Sharing…';
+      const key = randomKey();
+      try {
+        const remote = await boardsApi('create', { key, body: { doc: docOf(p), name } });
+        ui.myName = name;
+        p.shared = { id: remote.id, key, rev: remote.rev, base: remote.doc };
+        rememberTeam(p, remote); replaceDoc(p, remote.doc); persist(); render();
+        freshLink = { label: 'Your personal link', url: shareLink(remote.id, key), hint: 'save it to open the board on another device' };
+        renderTeam(); toast('Shared. Now invite your team.');
+      } catch (err) { $('.share-error').textContent = err.message; btn.disabled = false; btn.textContent = 'Share on server'; }
+    };
+    return;
+  }
+
+  const sh = p.shared, owner = sh.role === 'owner', me = sh.me;
+  $('#shareheading').textContent = sh.role === 'public' ? 'Shared project · public view' : 'Team';
+  const linkBox = (label, url, hint, idn) => `<div class="link-box"><strong>${esc(label)}</strong>${hint ? `<span class="muted small"> · ${esc(hint)}</span>` : ''}<div class="link-row"><input readonly value="${esc(url)}" id="${idn}" aria-label="${esc(label)}"><button type="button" data-copy="${idn}">Copy</button></div></div>`;
+
+  if (sh.role === 'public') {
+    body.innerHTML = `<p class="muted">You’re viewing this board through a public view-only link. Ask an owner to invite you by name if you need to make changes.</p>
+      <div class="share-actions"><button type="button" id="leaveshare">Remove from this device</button></div>`;
+  } else {
+    const members = sh.members || [];
+    const memberRow = m => {
+      const isMe = me && m.id === me.id;
+      return `<div class="member-row" data-member="${esc(m.id)}">
+        <span class="avatar">${esc(initials(m.name))}</span>
+        <div class="member-info"><strong>${esc(m.name)}${isMe ? ' <span class="muted small">(you)</span>' : ''}</strong><span class="muted small">Last active ${esc(ago(m.last_seen))}${m.link_reset_at ? ' · link reset ' + esc(ago(m.link_reset_at)) : ''}</span></div>
+        ${owner ? `<select data-role="${esc(m.id)}" aria-label="Role for ${esc(m.name)}">${['owner', 'editor', 'viewer'].map(r => `<option value="${r}" ${m.role === r ? 'selected' : ''}>${ROLE_LABEL[r]}</option>`).join('')}</select>` : `<span class="role-pill ${esc(m.role)}">${ROLE_LABEL[m.role]}</span>`}
+        ${owner || isMe ? `<button type="button" class="small-btn" data-reset="${esc(m.id)}" title="Make a new link; the old one stops working">Reset link</button>` : ''}
+        ${owner && !isMe ? `<button type="button" class="icon" data-remove="${esc(m.id)}" aria-label="Remove ${esc(m.name)}">×</button>` : ''}
+      </div>`;
+    };
+    const vl = sh.viewLink;
+    body.innerHTML = `
+      ${freshLink ? `<div class="fresh-link">${linkBox(freshLink.label, freshLink.url, freshLink.hint, 'freshlink')}<p class="small">Copy it now and send it privately. Daycraft can’t show this link again, but you can reset it to get a new one.</p></div>` : ''}
+      <h3 class="team-h">Members <span class="muted small">${members.length}</span></h3>
+      <div class="member-list">${members.map(memberRow).join('')}</div>
+      ${owner ? `<form id="inviteform" class="invite-row"><input name="name" required maxlength="40" placeholder="Name" aria-label="Name to invite"><select name="role" aria-label="Role"><option value="editor">Editor</option><option value="viewer">Viewer</option><option value="owner">Owner</option></select><button class="primary">Invite</button></form>
+        <p class="muted small">Editors can change cards, sprints and notes. Viewers can only look. Owners can also manage members and links.</p>` : ''}
+      ${me ? linkBox('Your personal link', shareLink(sh.id, sh.key), 'open this board on another device', 'mylink') : ''}
+      ${owner ? `<h3 class="team-h">Public view-only link</h3>
+        ${vl?.enabled ? (sh.viewKey ? linkBox('Public link', shareLink(sh.id, sh.viewKey), 'anyone with it can view', 'publink') : `<p class="muted small">On since ${esc(ago(vl.created_at))}. Reset it to get a link you can copy here.</p>`) + '<div class="share-actions inline"><button type="button" id="rotatepublic">Reset public link</button><button type="button" id="disablepublic">Turn off</button></div>'
+          : '<p class="muted small">Off. Turn it on to let stakeholders follow the board without being members.</p><button type="button" id="enablepublic">Turn on public link</button>'}` : ''}
+      <details class="activity"><summary>Recent activity</summary>${(sh.activity || []).map(a => `<div class="activity-row"><strong>${esc(a.by)}</strong> ${esc(a.summary)} <span class="muted small">${esc(ago(a.at))}</span></div>`).join('') || '<p class="muted small">Nothing yet.</p>'}</details>
+      <div class="share-actions"><button type="button" id="leaveshare">${me ? 'Leave board' : 'Remove from this device'}</button>${owner ? '<button type="button" class="danger" id="deleteshare">Delete for everyone</button>' : ''}</div>`;
+  }
+  body.insertAdjacentHTML('beforeend', '<p class="share-error" role="alert"></p>');
+  bindTeam(p);
+}
+
+async function teamCall(p, mode, payload) {
+  try {
+    const remote = await boardsApi(mode, { id: p.shared.id, key: p.shared.key, body: payload });
+    rememberTeam(p, remote); persist(); return remote;
+  } catch (e) {
+    if (!handleAccessError(p, e)) { const el = $('.share-error'); if (el) el.textContent = e.message; }
+    return null;
+  }
+}
+
+function bindTeam(p) {
+  const sh = p.shared;
+  $$('[data-copy]').forEach(b => b.onclick = async () => {
+    const input = $('#' + b.dataset.copy);
+    try { await navigator.clipboard.writeText(input.value); b.textContent = 'Copied'; } catch { input.select(); b.textContent = 'Press Ctrl+C'; }
+    setTimeout(() => (b.textContent = 'Copy'), 2000);
+  });
+  if (!sh) return;
+  $('#inviteform')?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const f = e.target.elements, key = randomKey();
+    const r = await teamCall(p, 'invite', { name: f.name.value.trim(), role: f.role.value, key });
+    if (r) { freshLink = { label: `${r.member.name}’s link (${ROLE_LABEL[r.member.role].toLowerCase()})`, url: shareLink(sh.id, key) }; renderTeam(); }
+  });
+  $$('[data-role]').forEach(sel => sel.onchange = async () => { if (!(await teamCall(p, 'member', { memberId: sel.dataset.role, role: sel.value }))) renderTeam(); });
+  $$('[data-remove]').forEach(b => b.onclick = async () => {
+    const m = sh.members.find(x => x.id === b.dataset.remove);
+    if (confirm(`Remove ${m.name} from this board? Their link stops working.`)) { await teamCall(p, 'member', { memberId: m.id, remove: true }); renderTeam(); }
+  });
+  $$('[data-reset]').forEach(b => b.onclick = async () => {
+    const m = sh.members.find(x => x.id === b.dataset.reset), self = sh.me && m.id === sh.me.id;
+    if (!confirm(self ? 'Reset your personal link? Your old link stops working on every device; this device switches to the new one.' : `Reset ${m.name}’s link? Their old link stops working and you’ll need to send them the new one.`)) return;
+    const key = randomKey();
+    if (self) {
+      // Switch this device to the new key as soon as the server accepts it.
+      try { const r = await boardsApi('rotate', { id: sh.id, key: sh.key, body: { memberId: m.id, key } }); sh.key = key; rememberTeam(p, r); persist(); }
+      catch (e) { $('.share-error').textContent = e.message; return; }
+    } else if (!(await teamCall(p, 'rotate', { memberId: m.id, key }))) return;
+    freshLink = { label: self ? 'Your new personal link' : `${m.name}’s new link`, url: shareLink(sh.id, key) };
+    renderTeam();
+  });
+  const publicLink = async action => {
+    const key = action === 'disable' ? undefined : randomKey();
+    if (await teamCall(p, 'viewlink', { action, key })) { if (key) sh.viewKey = key; else delete sh.viewKey; persist(); renderTeam(); }
+  };
+  $('#enablepublic')?.addEventListener('click', () => publicLink('enable'));
+  $('#rotatepublic')?.addEventListener('click', () => confirm('Reset the public link? The current one stops working.') && publicLink('rotate'));
+  $('#disablepublic')?.addEventListener('click', () => confirm('Turn off the public link? Anyone using it loses access.') && publicLink('disable'));
+  $('#leaveshare').onclick = async () => {
+    const member = !!sh.me;
+    if (!confirm(member ? `Leave “${p.name}”? You’ll need a new invite to come back. A local copy stays on this device.` : `Remove “${p.name}” from this device?`)) return;
+    if (member && !(await teamCall(p, 'leave', {}))) return;
+    if (member) { delete p.shared; p.name += ' (local copy)'; }
+    else store.projects = store.projects.filter(x => x !== p);
+    ui.project = (store.projects.includes(p) ? p : store.projects[0])?.id; persist(); $('#sharedialog').close(); render();
+  };
+  $('#deleteshare')?.addEventListener('click', async () => {
+    if (!confirm(`Delete “${p.name}” for everyone? Every link stops working and the board is removed from the server. This cannot be undone.`)) return;
+    try { await boardsApi('delete', { id: sh.id, key: sh.key, body: {} }); }
+    catch (e) { if (e.status !== 404) { $('.share-error').textContent = e.message; return; } }
+    store.projects = store.projects.filter(x => x !== p); ui.project = store.projects[0]?.id; persist(); $('#sharedialog').close(); render();
+    toast('Shared board deleted.');
+  });
+}
+$('#sharebtn').onclick = openShare;
+$('#closeshare').onclick = () => $('#sharedialog').close();
+
+// Opening a share link: /boards#board=<id>&key=<key>
+async function joinFromLink() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const id = params.get('board'), key = params.get('key');
+  if (!id || !key) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  if (!/^[a-f0-9]{64}$/.test(key)) return toast('That board link is not valid.');
+  try {
+    const remote = await boardsApi('get', { id, key });
+    let p = store.projects.find(x => x.shared?.id === id);
+    const rank = { public: 0, viewer: 1, editor: 2, owner: 3 };
+    if (p) {
+      if (rank[remote.role] >= rank[p.shared.role] || remote.me) { p.shared.key = key; delete p.shared.me; }
+      mergeRemote(p, remote);
+    } else {
+      p = { id: uid(), shared: { id, key, rev: remote.rev, base: remote.doc } };
+      rememberTeam(p, remote); replaceDoc(p, remote.doc); store.projects.push(p);
+    }
+    if (remote.me) ui.myName = remote.me.name;
+    ui.project = p.id; ui.view = null; persist(); render();
+    toast(remote.me ? `Welcome, ${remote.me.name}. You’re ${remote.role === 'owner' ? 'an owner' : remote.role === 'editor' ? 'an editor' : 'a viewer'} on “${p.name}”.` : `Opened “${p.name}” (view only).`);
+  } catch (e) { toast(e.status === 404 ? 'This shared board no longer exists, or the link is not valid.' : e.message); }
+}
+window.addEventListener('hashchange', joinFromLink);
+
 // ---------- main render ----------
 function render() {
   const p = project();
-  $('#projectselect').innerHTML = store.projects.map(x => `<option value="${esc(x.id)}" ${x.id === p?.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+  $('#projectselect').innerHTML = store.projects.map(x => `<option value="${esc(x.id)}" ${x.id === p?.id ? 'selected' : ''}>${x.shared ? (isReadonly(x) ? '👁 ' : '👥 ') : ''}${esc(x.name)}</option>`).join('');
+  document.body.classList.toggle('readonly', !!p && isReadonly(p));
+  $('#sharebtn').hidden = !p;
+  $('#sharebtn').textContent = p?.shared ? (p.shared.members ? `👥 Team · ${p.shared.members.length}` : '👁 Shared') : '🔗 Share';
+  showStatus();
   if (!p) {
     $('#projecttype').textContent = ''; $('#viewtabs').innerHTML = ''; $('#filterbar').hidden = true; $('#projectsettings').hidden = true;
     $('#view').innerHTML = '<div class="empty-state"><h2>Make room for the work that matters</h2><p>Create a Scrum project for time-boxed sprints, or a Kanban project for continuous flow.</p><button class="primary" id="firstproject">＋ Create a project</button></div>';
@@ -861,6 +1191,8 @@ function render() {
   if ($('#filterlabel').value !== (f.label || '')) f.label = '';
 
   ({ backlog: renderBacklog, sprint: renderSprintBoard, reports: renderReports, ceremonies: renderCeremonies, board: renderKanban, metrics: renderMetrics })[ui.view](p);
+  if (isReadonly(p)) $$('#view [draggable]').forEach(el => (el.draggable = false));
+  pendingRender = false;
   saveUi();
 }
 
@@ -872,4 +1204,6 @@ document.addEventListener('keydown', e => {
 
 load();
 render();
+joinFromLink();
+pollProject(project());
 })();

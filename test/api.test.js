@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createApp, mondayOf } = require('../server');
+const { createApp } = require('../server');
+const { mondayOf } = require('../lib/circle-api');
 
 const today = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; })();
 const week = mondayOf(today);
@@ -13,7 +14,7 @@ const key = () => crypto.randomBytes(32).toString('hex');
 
 async function withServer(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'daycraft-'));
-  const { server } = createApp({ dataFile: path.join(dir, 'circle.json') });
+  const { server } = createApp({ dataFile: path.join(dir, 'daycraft.json') });
   await new Promise(r => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const api = async (mode, { k, body, w = week } = {}) => {
@@ -87,6 +88,6 @@ test('rejects bad weeks, enforces capacity and persists to disk', () => withServ
   assert.equal((await api('board', { w: mondayOf(today).replace(/\d\d$/, d => String(Number(d) + 1).padStart(2, '0')) })).status, 400);
   for (let i = 0; i < 10; i++) assert.equal((await api('claim', { k: key(), body: { name: 'P' + i, consent: true } })).status, 200);
   assert.equal((await api('claim', { k: key(), body: { name: 'Late', consent: true } })).status, 409);
-  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'circle.json'), 'utf8'));
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'daycraft.json'), 'utf8')).records.circle;
   assert.equal(saved.members.length, 10);
 }));
