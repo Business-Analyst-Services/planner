@@ -3,14 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Daycraft — Boards</title>
+<title>BAS Planner — Boards</title>
+<link rel="icon" href="/brand/bas-badge.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/brand/bas-logo-192.png"><meta name="theme-color" content="#1F3A5F">
 <link rel="stylesheet" href="/view-tabs.css">
 <link rel="stylesheet" href="/boards.css">
+<link rel="stylesheet" href="/brand.css">
 </head>
 <body>
 <header class="app-header">
   <div>
-    <a class="brand" href="/">◈ daycraft<span>.</span></a>
+    <a class="brand bas-brand" href="/" aria-label="BAS Planner home"><img src="/brand/bas-logo-96.png" alt="" width="44" height="44"><span class="bas-word"><b>BAS</b> Planner</span></a>
     <div class="sub">Scrum sprints and Kanban flow, side by side with your week.</div>
   </div>
   <div class="header-actions">
@@ -85,7 +87,7 @@
     <p class="muted small" id="cardmeta"></p>
     <div class="actions">
       <button type="button" id="deletecard" class="danger" hidden>Delete</button>
-      <button type="button" id="plancard" hidden title="Add this card to your Daycraft planner">📅 Add to planner</button>
+      <button type="button" id="plancard" hidden title="Add this card to your BAS Planner week">📅 Add to planner</button>
       <span class="spacer"></span>
       <button type="button" id="cancelcard">Cancel</button>
       <button class="primary">Save card</button>
@@ -183,6 +185,7 @@
 
 <input id="boardsfile" type="file" accept="application/json" hidden>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<footer class="bas-band"><span>BAS · PLANNER</span><span>BOARDS</span></footer>
 <script src="/boards.js"></script>
 </body>
 </html>
