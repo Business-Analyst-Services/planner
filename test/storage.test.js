@@ -8,14 +8,21 @@ const { createRedisDb, createFileDb, createBlobDb } = require('../lib/storage');
 // In-memory stand-in for @vercel/blob with ETag conditional writes.
 function fakeBlob() {
   class BlobPreconditionFailedError extends Error {}
+  class BlobNotFoundError extends Error {}
   const files = new Map(); let n = 0;
   const tick = () => new Promise(r => setTimeout(r, Math.random() * 3));
   return {
     BlobPreconditionFailedError,
+    BlobNotFoundError,
+    async head(path) {
+      await tick(); const f = files.get(path);
+      if (!f) throw new BlobNotFoundError('The requested blob does not exist');
+      return { etag: f.etag };
+    },
     async get(path, opts) {
       await tick(); assert.equal(opts.access, 'private'); assert.equal(opts.useCache, false);
       const f = files.get(path); if (!f) return null;
-      return { statusCode: 200, stream: new Blob([f.text]).stream(), blob: { etag: f.etag } };
+      return { statusCode: 200, stream: new Blob([f.text]).stream(), blob: { etag: 'W/' + f.etag + '-gzip' } };
     },
     async put(path, text, opts) {
       await tick(); const f = files.get(path);
