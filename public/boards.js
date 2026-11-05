@@ -42,9 +42,10 @@ function toast(text) {
 // ---------- store ----------
 let store, ui;
 function load() {
-  try { store = JSON.parse(localStorage.getItem(STORE_KEY)); } catch { store = null; }
-  if (!validStore(store)) { store = { version: 1, projects: [] }; seed(); save(); }
   try { ui = JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch { ui = {}; }
+  try { store = JSON.parse(localStorage.getItem(STORE_KEY)); } catch { store = null; }
+  if (!validStore(store)) { store = { version: 1, projects: [] }; seed(); persist(); }
+  store.projects.forEach(p => { p.standups = p.standups || []; p.standups.forEach(x => { if (!x.id) x.id = uid(); }); });
   if (!store.projects.some(p => p.id === ui.project)) ui.project = store.projects[0]?.id;
   ui.filters = ui.filters || {};
 }
@@ -54,6 +55,11 @@ function validStore(s) {
     Array.isArray(p.columns) && p.columns.length >= 2 && Array.isArray(p.cards) && Array.isArray(p.sprints));
 }
 function save() {
+  guardReadonly();
+  persist();
+  queueSyncAll();
+}
+function persist() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch { toast('Storage unavailable. Export your boards to keep a backup.'); }
   saveUi();
 }
@@ -555,7 +561,7 @@ function renderCeremonies(p) {
   </div>`;
   $('#standupform').onsubmit = e => {
     e.preventDefault();
-    const f = e.target.elements, entry = { date: t, sprint: s?.id || null, yesterday: f.yesterday.value.trim(), today: f.today.value.trim(), blockers: f.blockers.value.trim() };
+    const f = e.target.elements, entry = { id: todays?.id || uid(), date: t, sprint: s?.id || null, yesterday: f.yesterday.value.trim(), today: f.today.value.trim(), blockers: f.blockers.value.trim() };
     p.standups = p.standups.filter(x => !(x.date === t && x.sprint === entry.sprint));
     if (entry.yesterday || entry.today || entry.blockers) p.standups.push(entry);
     save(); render(); toast('Daily scrum notes saved.');
@@ -679,6 +685,10 @@ function openCard(id = null, preset = {}) {
   $('#deletecard').hidden = !c; $('#plancard').hidden = !c;
   $('#cardmeta').textContent = c ? `Created ${prettyY(c.created.slice(0, 10))}${c.doneAt ? ' · Done ' + prettyY(c.doneAt.slice(0, 10)) : ''}${flowTimes(p, c) ? ' · Cycle time ' + round1(flowTimes(p, c).cycle) + ' days' : ''}` : '';
   $('#assignees').innerHTML = [...new Set(store.projects.flatMap(x => x.cards.map(c => c.assignee)).filter(Boolean))].map(a => `<option value="${esc(a)}">`).join('');
+  const ro = isReadonly(p);
+  $$('#cardform input, #cardform select, #cardform textarea, #cardform button').forEach(el => { if (!['cancelcard', 'plancard'].includes(el.id)) el.disabled = ro; });
+  if (ro) { $('#cardheading').textContent = 'View card'; $('#deletecard').hidden = true; }
+  $('#cardform button.primary').hidden = ro;
   $('#carddialog').showModal();
   f.title.focus();
 }
@@ -793,8 +803,9 @@ $('#projectform').onsubmit = e => {
   save(); $('#projectdialog').close(); render();
 };
 $('#cancelproject').onclick = () => $('#projectdialog').close();
-$('#deleteproject').onclick = () => {
+$('#deleteproject').onclick = async () => {
   const id = $('#projectform').dataset.id, p = store.projects.find(x => x.id === id);
+  if (p.shared) { $('#projectdialog').close(); return openShare(); }
   if (!confirm(`Delete “${p.name}” and all ${p.cards.length} cards? Export first if you need a copy.`)) return;
   store.projects = store.projects.filter(x => x.id !== id); ui.project = store.projects[0]?.id; save(); $('#projectdialog').close(); render();
 };
@@ -830,10 +841,228 @@ $('#boardsfile').onchange = async e => {
   e.target.value = '';
 };
 
+// ---------- shared boards (server sync) ----------
+// A shared project keeps `shared = { id, key, role, rev, base }` where `base` is the last
+// document received from the server. Local edits are sent as a patch (base → current);
+// remote changes are merged by re-applying any unsent local edits on top of the server copy.
+const DOC_FIELDS = ['name', 'sprintDays', 'columns'];
+const DOC_COLLS = ['cards', 'sprints', 'standups'];
+const syncing = new Map(); // project id -> { inflight, timer, status }
+let pendingRender = false;
+
+const clone = v => JSON.parse(JSON.stringify(v));
+const docOf = p => clone({ type: p.type, createdAt: p.createdAt, name: p.name, sprintDays: p.sprintDays, columns: p.columns, cards: p.cards, sprints: p.sprints, standups: p.standups || [] });
+const isReadonly = p => p.shared?.role === 'view';
+function replaceDoc(p, doc) { const d = clone(doc); for (const k of ['type', 'createdAt', ...DOC_FIELDS, ...DOC_COLLS]) p[k] = d[k]; }
+
+function diffDocs(a, b) {
+  const ops = { set: {}, upsert: {}, remove: {} }; let n = 0;
+  for (const f of DOC_FIELDS) if (JSON.stringify(a[f]) !== JSON.stringify(b[f])) { ops.set[f] = b[f]; n++; }
+  for (const c of DOC_COLLS) {
+    const before = new Map((a[c] || []).map(x => [x.id, JSON.stringify(x)])), seen = new Set();
+    for (const x of b[c] || []) { seen.add(x.id); if (before.get(x.id) !== JSON.stringify(x)) { (ops.upsert[c] = ops.upsert[c] || []).push(x); n++; } }
+    for (const id of before.keys()) if (!seen.has(id)) { (ops.remove[c] = ops.remove[c] || []).push(id); n++; }
+  }
+  return n ? ops : null;
+}
+function applyDocOps(doc, ops) {
+  const next = clone(doc);
+  if (!ops) return next;
+  Object.assign(next, clone(ops.set || {}));
+  for (const c of DOC_COLLS) {
+    const map = new Map((next[c] || []).map(x => [x.id, x]));
+    for (const id of ops.remove?.[c] || []) map.delete(id);
+    for (const x of ops.upsert?.[c] || []) map.set(x.id, clone(x));
+    next[c] = [...map.values()];
+  }
+  return next;
+}
+
+class ApiError extends Error { constructor(status, message) { super(message); this.status = status; } }
+async function boardsApi(mode, { id, since, key, body } = {}) {
+  const q = new URLSearchParams({ mode, ...(id ? { id } : {}), ...(since != null ? { since } : {}) });
+  let res;
+  try {
+    res = await fetch('/api/boards?' + q, { method: body ? 'POST' : 'GET', cache: 'no-store',
+      headers: { Authorization: 'Bearer ' + key, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  } catch { throw new ApiError(0, 'You appear to be offline.'); }
+  let json; try { json = await res.json(); } catch { throw new ApiError(res.status || 0, 'The server is unavailable.'); }
+  if (!res.ok) throw new ApiError(res.status, json.error || 'Something went wrong.');
+  return json;
+}
+const randomKey = () => [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, '0')).join('');
+async function viewKeyFor(editKey) {
+  if (!crypto.subtle) return null;
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(editKey + ':view'));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+const shareLink = (id, key) => `${location.origin}/boards#board=${encodeURIComponent(id)}&key=${key}`;
+
+function state(p) { if (!syncing.has(p.id)) syncing.set(p.id, { inflight: false, timer: null, status: 'synced' }); return syncing.get(p.id); }
+function setStatus(p, status) { state(p).status = status; if (p === project()) showStatus(); }
+function showStatus() {
+  const p = project(), el = $('#syncstatus');
+  if (!p?.shared) { el.textContent = '● Saved on this device'; el.className = 'sync-status'; return; }
+  const st = state(p).status;
+  el.className = 'sync-status shared ' + st;
+  el.textContent = isReadonly(p) ? '● Shared · view only' : st === 'saving' ? '● Saving…' : st === 'offline' ? '● Offline · will retry' : '● Shared · up to date';
+}
+
+// View-only copies can't be edited: undo any local change.
+function guardReadonly() {
+  for (const p of store.projects) if (isReadonly(p) && diffDocs(p.shared.base, docOf(p))) { replaceDoc(p, p.shared.base); toast('This board is view-only.'); }
+}
+
+function queueSyncAll() {
+  for (const p of store.projects) {
+    if (!p.shared || isReadonly(p)) continue;
+    const st = state(p);
+    clearTimeout(st.timer);
+    st.timer = setTimeout(() => syncProject(p.id), 300);
+  }
+}
+
+// Remote changes arrived: keep unsent local edits on top of the new server copy.
+function mergeRemote(p, remote, sentFrom = p.shared.base) {
+  const pending = diffDocs(sentFrom, docOf(p));
+  const before = JSON.stringify(docOf(p));
+  replaceDoc(p, applyDocOps(remote.doc, pending));
+  p.shared.base = remote.doc; p.shared.rev = remote.rev; p.shared.role = remote.role || p.shared.role;
+  persist();
+  if (p === project() && JSON.stringify(docOf(p)) !== before) safeRender();
+  return pending;
+}
+
+async function syncProject(pid) {
+  const p = store.projects.find(x => x.id === pid);
+  if (!p?.shared || isReadonly(p)) return;
+  const st = state(p);
+  if (st.inflight) { st.again = true; return; }
+  const ops = diffDocs(p.shared.base, docOf(p));
+  if (!ops) { setStatus(p, 'synced'); return; }
+  st.inflight = true; st.again = false; setStatus(p, 'saving');
+  const sent = docOf(p);
+  try {
+    const remote = await boardsApi('patch', { id: p.shared.id, key: p.shared.key, body: { baseRev: p.shared.rev, ops } });
+    const pending = mergeRemote(p, remote, sent);
+    st.inflight = false;
+    if (pending || st.again) syncProject(pid); else setStatus(p, 'synced');
+  } catch (e) {
+    st.inflight = false;
+    if (!handleAccessError(p, e)) { setStatus(p, 'offline'); clearTimeout(st.timer); st.timer = setTimeout(() => syncProject(pid), 5000); }
+  }
+}
+
+async function pollProject(p) {
+  if (!p?.shared || state(p).inflight) return;
+  try {
+    const remote = await boardsApi('get', { id: p.shared.id, key: p.shared.key, since: p.shared.rev });
+    if (state(p).inflight || !store.projects.includes(p)) return;
+    if (!remote.unchanged) { const pending = mergeRemote(p, remote); if (pending && !isReadonly(p)) queueSyncAll(); }
+    if (state(p).status === 'offline' && !diffDocs(p.shared.base, docOf(p))) setStatus(p, 'synced');
+  } catch (e) { if (!handleAccessError(p, e)) setStatus(p, 'offline'); }
+}
+
+function handleAccessError(p, e) {
+  if (e.status !== 404 && e.status !== 403) return false;
+  if (e.status === 403) { p.shared.role = 'view'; replaceDoc(p, p.shared.base); persist(); render(); toast('Your link for this board is now view-only.'); return true; }
+  delete p.shared; p.name = p.name + ' (local copy)'; persist(); render();
+  toast('This shared board was deleted or its link is no longer valid. A local copy has been kept on this device.');
+  return true;
+}
+
+function safeRender() {
+  const a = document.activeElement;
+  if (a && a.closest('#view') && a.matches('input,textarea,select')) { pendingRender = true; return; }
+  render();
+}
+$('#view').addEventListener('focusout', () => setTimeout(() => { if (pendingRender && !document.activeElement?.closest('#view input,#view textarea,#view select')) render(); }, 0));
+
+setInterval(() => { if (document.visibilityState === 'visible') pollProject(project()); }, 4000);
+window.addEventListener('focus', () => pollProject(project()));
+window.addEventListener('online', () => queueSyncAll());
+
+// Share dialog
+async function openShare() {
+  const p = project(); if (!p) return;
+  const body = $('#sharebody');
+  if (!p.shared) {
+    $('#shareheading').textContent = 'Share this project';
+    body.innerHTML = `<p>Put <strong>${esc(p.name)}</strong> on the Daycraft server so your team can work on it together. Changes sync automatically for everyone who has the link.</p>
+      <ul class="share-points"><li><strong>Edit link</strong>: teammates can move cards, plan sprints and add notes.</li><li><strong>View-only link</strong>: for stakeholders who only need to follow along.</li><li>No accounts: anyone with a link has that access, so share it privately.</li></ul>
+      <button class="primary" id="startshare">Share on server</button><p class="share-error" role="alert"></p>`;
+    $('#startshare').onclick = async () => {
+      const btn = $('#startshare'); btn.disabled = true; btn.textContent = 'Sharing…';
+      const key = randomKey();
+      try {
+        const remote = await boardsApi('create', { key, body: { doc: docOf(p) } });
+        p.shared = { id: remote.id, key, role: 'edit', rev: remote.rev, base: remote.doc };
+        replaceDoc(p, remote.doc); persist(); render(); openShare();
+        toast('Shared. Copy a link to invite your team.');
+      } catch (e) { $('.share-error').textContent = e.message; btn.disabled = false; btn.textContent = 'Share on server'; }
+    };
+  } else {
+    const edit = p.shared.role === 'edit', view = edit ? await viewKeyFor(p.shared.key) : p.shared.key;
+    $('#shareheading').textContent = edit ? 'Shared project' : 'Shared project · view only';
+    const linkRow = (label, hint, url, idn) => `<label>${label}<span class="muted small"> · ${hint}</span><div class="link-row"><input readonly value="${esc(url)}" id="${idn}" aria-label="${label}"><button type="button" data-copy="${idn}">Copy</button></div></label>`;
+    body.innerHTML = `<p class="muted">Everyone with a link sees changes within a few seconds. Treat links like passwords: anyone who has one gets that access.</p>
+      ${edit ? linkRow('Edit link', 'can change the board', shareLink(p.shared.id, p.shared.key), 'editlink') : ''}
+      ${view ? linkRow('View-only link', 'can follow along', shareLink(p.shared.id, view), 'viewlink') : ''}
+      <div class="share-actions"><button type="button" id="leaveshare">Remove from this device</button>${edit ? '<button type="button" class="danger" id="deleteshare">Delete for everyone</button>' : ''}</div>
+      <p class="share-error" role="alert"></p>`;
+    $$('[data-copy]').forEach(b => b.onclick = async () => {
+      const input = $('#' + b.dataset.copy);
+      try { await navigator.clipboard.writeText(input.value); b.textContent = 'Copied'; } catch { input.select(); b.textContent = 'Press Ctrl+C'; }
+      setTimeout(() => (b.textContent = 'Copy'), 2000);
+    });
+    $('#leaveshare').onclick = () => {
+      if (!confirm(`Remove “${p.name}” from this device? The shared board stays on the server${edit ? ' — make sure you have saved the edit link.' : '.'}`)) return;
+      store.projects = store.projects.filter(x => x !== p); ui.project = store.projects[0]?.id; persist(); $('#sharedialog').close(); render();
+    };
+    $('#deleteshare')?.addEventListener('click', async () => {
+      if (!confirm(`Delete “${p.name}” for everyone? All links stop working and every card is removed from the server. This cannot be undone.`)) return;
+      try { await boardsApi('delete', { id: p.shared.id, key: p.shared.key, body: {} }); }
+      catch (e) { if (e.status !== 404) { $('.share-error').textContent = e.message; return; } }
+      store.projects = store.projects.filter(x => x !== p); ui.project = store.projects[0]?.id; persist(); $('#sharedialog').close(); render();
+      toast('Shared board deleted.');
+    });
+  }
+  if (!$('#sharedialog').open) $('#sharedialog').showModal();
+}
+$('#sharebtn').onclick = openShare;
+$('#closeshare').onclick = () => $('#sharedialog').close();
+
+// Opening a share link: /boards#board=<id>&key=<key>
+async function joinFromLink() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const id = params.get('board'), key = params.get('key');
+  if (!id || !key) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  if (!/^[a-f0-9]{64}$/.test(key)) return toast('That board link is not valid.');
+  try {
+    const remote = await boardsApi('get', { id, key });
+    let p = store.projects.find(x => x.shared?.id === id);
+    if (p) {
+      if (remote.role === 'edit' || p.shared.role === 'view') { p.shared.key = key; p.shared.role = remote.role; }
+      mergeRemote(p, remote);
+    } else {
+      p = { id: uid(), shared: { id, key, role: remote.role, rev: remote.rev, base: remote.doc } };
+      replaceDoc(p, remote.doc); store.projects.push(p);
+    }
+    ui.project = p.id; ui.view = null; persist(); render();
+    toast(remote.role === 'edit' ? `Joined “${p.name}”. Your changes sync with the team.` : `Opened “${p.name}” (view only).`);
+  } catch (e) { toast(e.status === 404 ? 'This shared board no longer exists, or the link is not valid.' : e.message); }
+}
+window.addEventListener('hashchange', joinFromLink);
+
 // ---------- main render ----------
 function render() {
   const p = project();
-  $('#projectselect').innerHTML = store.projects.map(x => `<option value="${esc(x.id)}" ${x.id === p?.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+  $('#projectselect').innerHTML = store.projects.map(x => `<option value="${esc(x.id)}" ${x.id === p?.id ? 'selected' : ''}>${x.shared ? (x.shared.role === 'view' ? '👁 ' : '🔗 ') : ''}${esc(x.name)}</option>`).join('');
+  document.body.classList.toggle('readonly', !!p && isReadonly(p));
+  $('#sharebtn').hidden = !p;
+  $('#sharebtn').textContent = p?.shared ? '🔗 Shared' : '🔗 Share';
+  showStatus();
   if (!p) {
     $('#projecttype').textContent = ''; $('#viewtabs').innerHTML = ''; $('#filterbar').hidden = true; $('#projectsettings').hidden = true;
     $('#view').innerHTML = '<div class="empty-state"><h2>Make room for the work that matters</h2><p>Create a Scrum project for time-boxed sprints, or a Kanban project for continuous flow.</p><button class="primary" id="firstproject">＋ Create a project</button></div>';
@@ -861,6 +1090,8 @@ function render() {
   if ($('#filterlabel').value !== (f.label || '')) f.label = '';
 
   ({ backlog: renderBacklog, sprint: renderSprintBoard, reports: renderReports, ceremonies: renderCeremonies, board: renderKanban, metrics: renderMetrics })[ui.view](p);
+  if (isReadonly(p)) $$('#view [draggable]').forEach(el => (el.draggable = false));
+  pendingRender = false;
   saveUi();
 }
 
@@ -872,4 +1103,6 @@ document.addEventListener('keydown', e => {
 
 load();
 render();
+joinFromLink();
+pollProject(project());
 })();

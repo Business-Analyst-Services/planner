@@ -6,11 +6,13 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { handleBoards, BoardsError } = require('./boards-api');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const CAPACITY = Number(process.env.CIRCLE_CAPACITY) || 10;
 const TIMELINE_WEEKS = 13;
 const MAX_BODY = 16 * 1024;
+const MAX_BOARD_BODY = 3 * 1024 * 1024;
 const STATUSES = ['notyet', 'done', 'partial', 'rescheduled', 'paused', 'skipped'];
 const LOG_STATUSES = ['done', 'partial', 'rescheduled', 'paused', 'skipped'];
 
@@ -52,7 +54,7 @@ function localToday() {
 function inWeek(date, week) { return validDate(date) && date >= week && date <= addDays(week, 6); }
 
 // ---------- store ----------
-function emptyStore() { return { members: [], entries: {}, logs: [], comments: [] }; }
+function emptyStore() { return { members: [], entries: {}, logs: [], comments: [], boards: {} }; }
 
 function createStore(file) {
   let data = emptyStore();
@@ -197,11 +199,11 @@ function board(d, week) {
 }
 
 // ---------- API ----------
-const claimAttempts = new Map();
-function rateLimit(ip, limit = 20, windowMs = 60 * 60 * 1000) {
-  const now = Date.now(), list = (claimAttempts.get(ip) || []).filter(t => now - t < windowMs);
+const attempts = new Map();
+function rateLimit(ip, bucket = 'claim', limit = 20, windowMs = 60 * 60 * 1000) {
+  const k = bucket + ':' + ip, now = Date.now(), list = (attempts.get(k) || []).filter(t => now - t < windowMs);
   if (list.length >= limit) throw new HttpError(429, 'Too many attempts. Please try again later.');
-  list.push(now); claimAttempts.set(ip, list);
+  list.push(now); attempts.set(k, list);
 }
 
 function handleApi(store, { method, mode, week, key, body, ip }) {
@@ -339,10 +341,10 @@ function sendJson(res, status, obj) {
   send(res, status, JSON.stringify(obj), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
 }
 
-function readBody(req) {
+function readBody(req, limit = MAX_BODY) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
-    req.on('data', c => { size += c.length; if (size > MAX_BODY) { reject(new HttpError(413, 'Request too large.')); req.destroy(); } else chunks.push(c); });
+    req.on('data', c => { size += c.length; if (size > limit) { reject(new HttpError(413, 'Request too large.')); req.destroy(); } else chunks.push(c); });
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
@@ -367,15 +369,24 @@ function createApp({ dataFile = process.env.DATA_FILE || path.join(__dirname, 'd
   const store = createStore(dataFile);
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
-    if (url.pathname !== '/api/circle') return serveStatic(req, res, url.pathname);
+    const isBoards = url.pathname === '/api/boards';
+    if (url.pathname !== '/api/circle' && !isBoards) return serveStatic(req, res, url.pathname);
     try {
       let body = {};
       if (req.method === 'POST') {
-        const raw = await readBody(req);
+        const raw = await readBody(req, isBoards ? MAX_BOARD_BODY : MAX_BODY);
         try { body = raw ? JSON.parse(raw) : {}; } catch { throw new HttpError(400, 'Invalid JSON.'); }
         if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Invalid request body.');
       }
       const auth = req.headers.authorization || '';
+      const key = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+      if (isBoards) {
+        return sendJson(res, 200, handleBoards(store, {
+          method: req.method, mode: url.searchParams.get('mode') || 'get', projectId: url.searchParams.get('id'),
+          since: url.searchParams.get('since'), key, body, ip: req.socket.remoteAddress || '',
+          rateLimit: ip => rateLimit(ip, 'boards', 30),
+        }));
+      }
       const result = handleApi(store, {
         method: req.method, mode: url.searchParams.get('mode') || 'board', week: url.searchParams.get('week'),
         key: auth.startsWith('Bearer ') ? auth.slice(7).trim() : '', body,
@@ -383,8 +394,9 @@ function createApp({ dataFile = process.env.DATA_FILE || path.join(__dirname, 'd
       });
       sendJson(res, 200, result);
     } catch (e) {
-      if (!(e instanceof HttpError)) console.error(e);
-      sendJson(res, e.status || 500, { error: e instanceof HttpError ? e.message : 'Something went wrong. Try again.' });
+      const known = e instanceof HttpError || e instanceof BoardsError;
+      if (!known) console.error(e);
+      sendJson(res, known ? e.status : 500, { error: known ? e.message : 'Something went wrong. Try again.' });
     }
   });
   return { server, store };

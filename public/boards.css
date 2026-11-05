@@ -193,3 +193,20 @@ dialog legend{font-size:12px;padding:0 4px}
   .card-move{opacity:1}
   .stat-grid.three{grid-template-columns:repeat(3,1fr)}
 }
+
+/* Shared boards */
+.sync-status{font-size:11px;color:var(--muted);white-space:nowrap}
+.sync-status.shared{color:var(--green);font-weight:600}
+.sync-status.saving{color:#8a5b0c}.sync-status.offline{color:var(--red)}
+#sharedialog p{line-height:1.6}
+.share-points{font-size:13px;line-height:1.7;padding-left:18px;color:#4d6146}
+.link-row{display:flex;gap:6px;margin-top:6px}
+.link-row input{flex:1;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:#fbfcfa;font-family:ui-monospace,Menlo,monospace;font-size:11px}
+.share-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid #edf0ec}
+.share-error{color:var(--red);font-size:12px}
+body.readonly #newcard,body.readonly #projectsettings,body.readonly .card-move,body.readonly .quick-add,
+body.readonly .sprint-tools button,body.readonly #createsprint,body.readonly #completesprint,body.readonly #archivedone,
+body.readonly [data-unarchive],body.readonly .inline-add,body.readonly [data-retro-del],body.readonly #standupform .actions,
+body.readonly #gobacklog,body.readonly .col-empty{display:none!important}
+body.readonly .card,body.readonly .backlog-row{cursor:pointer}
+body.readonly #standupform textarea,body.readonly [data-retro-done]{pointer-events:none;background:#fbfcfa}
